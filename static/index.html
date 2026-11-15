@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Section Portal</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="bg"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
+<div id="toast" role="status"></div>
+
+<!-- LOGIN / REGISTER -->
+<section id="auth" class="glass authbox" hidden>
+  <h1>🎓 Section Portal</h1>
+  <div class="chips"><button id="t-login" class="on" type="button">Log in</button><button id="t-reg" type="button">Register</button></div>
+  <form id="aform" class="form">
+    <input id="f-name" placeholder="Full name" maxlength="60" autocomplete="name" hidden>
+    <input id="f-email" type="email" placeholder="Email" autocomplete="email" required>
+    <input id="f-pw" type="password" placeholder="Password (8+ characters)" autocomplete="current-password" required>
+    <button class="btn" id="f-go">Log in</button>
+    <p class="small" id="f-msg" role="alert"></p>
+  </form>
+  <p class="small">New accounts must be approved by your CR or admin before they can enter.</p>
+</section>
+
+<!-- APP -->
+<div id="app" hidden>
+<nav class="side glass" aria-label="Main">
+  <h1>Section Portal</h1>
+  <ul class="nav" id="nav"></ul>
+  <div class="foot">
+    <p id="who" class="small"></p>
+    <button class="btn theme" id="theme">🌓 Toggle theme</button>
+    <button class="btn theme" id="logout">Log out</button>
+  </div>
+</nav>
+<nav class="bnav glass" id="bnav" aria-label="Main"></nav>
+
+<main><div class="wrap">
+<section class="view" id="dashboard">
+  <div class="banner glass"><div id="notice"></div><div class="badge">Admin Broadcast</div></div>
+  <div class="stats" id="stats"></div>
+  <div class="grid">
+    <div>
+      <div class="card glass"><h2>📅 Section Timetable</h2><div class="tbl"><table><thead id="tt-head"></thead><tbody id="tt-body"></tbody></table></div></div>
+      <div class="card glass"><h2>📄 Assignments</h2><div class="chips" id="days"></div><div id="assign"></div></div>
+    </div>
+    <div class="card glass"><h2>🎯 Personal Attendance</h2><div id="att"></div><p class="small" style="margin-top:12px">Target: 75%. Only you can see and change your attendance.</p></div>
+  </div>
+</section>
+
+<section class="view" id="announcements">
+  <h1 class="page-title">📢 Announcements</h1><p class="sub">Notices from the admin and your CR.</p>
+  <div class="chips" id="acats"></div><div id="alist"></div>
+</section>
+
+<section class="view" id="events">
+  <h1 class="page-title">🎉 Events</h1><p class="sub">Upcoming events. Let everyone know if you’re coming.</p>
+  <div class="cards" id="elist"></div>
+</section>
+
+<section class="view" id="cr">
+  <h1 class="page-title">🛡️ CR Portal</h1><p class="sub">Only CRs and admins can see and use this page.</p>
+  <div class="grid">
+    <div>
+      <div class="card glass"><h2>🚪 Join requests</h2><div id="req"></div></div>
+      <div class="card glass"><h2>New announcement</h2><div class="form">
+        <input id="a-title" placeholder="Title" maxlength="80">
+        <select id="a-cat"><option>Academic</option><option>Exam</option><option>General</option></select>
+        <textarea id="a-body" placeholder="Details" maxlength="400"></textarea>
+        <label class="small"><input type="checkbox" id="a-pin" style="flex:none;margin-right:6px">Pin as latest notice</label>
+        <button class="btn" id="a-add">Publish announcement</button></div></div>
+      <div class="card glass"><h2>Timetable editor</h2><div class="tbl"><table id="tt-edit"></table></div>
+        <button class="btn" id="tt-save" style="margin-top:12px">Save timetable</button></div>
+      <div class="card glass" id="users-card" hidden><h2>👥 Users (admin only)</h2><div id="users"></div></div>
+    </div>
+    <div>
+      <div class="card glass"><h2>New event</h2><div class="form">
+        <input id="e-title" placeholder="Event name" maxlength="60"><input id="e-date" type="date"><input id="e-place" placeholder="Venue" maxlength="60">
+        <button class="btn" id="e-add">Add event</button></div></div>
+      <div class="card glass"><h2>New assignment</h2><div class="form">
+        <select id="s-day"></select><input id="s-sub" placeholder="Subject" maxlength="30">
+        <input id="s-title" placeholder="Assignment title" maxlength="80"><input id="s-due" type="date">
+        <button class="btn" id="s-add">Add assignment</button></div></div>
+    </div>
+  </div>
+</section>
+</div></main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
