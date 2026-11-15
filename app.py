@@ -64,6 +64,11 @@ CREATE TABLE IF NOT EXISTS attendance(user_id INTEGER REFERENCES users(id) ON DE
   attended INTEGER DEFAULT 0, total INTEGER DEFAULT 0, PRIMARY KEY(user_id, subject));
 CREATE TABLE IF NOT EXISTS rsvps(user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
   event_id INTEGER REFERENCES events(id) ON DELETE CASCADE, PRIMARY KEY(user_id, event_id));
+CREATE TABLE IF NOT EXISTS exams(id INTEGER PRIMARY KEY, title TEXT, subject TEXT, date TEXT, time TEXT, venue TEXT);
+CREATE TABLE IF NOT EXISTS links(id INTEGER PRIMARY KEY, kind TEXT, title TEXT, url TEXT, note TEXT);
+CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY, kind TEXT, title TEXT, created TEXT DEFAULT (datetime('now')));
+CREATE TABLE IF NOT EXISTS att_log(id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  subject TEXT, attended INTEGER, ts TEXT DEFAULT (datetime('now')));
 """
 
 
@@ -86,8 +91,11 @@ def init_db():
     with app.app_context():
         d = db()
         d.executescript(SCHEMA)
-        if "approved" not in [r["name"] for r in d.execute("PRAGMA table_info(users)")]:
+        cols = [r["name"] for r in d.execute("PRAGMA table_info(users)")]
+        if "approved" not in cols:
             d.execute("ALTER TABLE users ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")  # existing users stay approved
+        if "seen_nid" not in cols:
+            d.execute("ALTER TABLE users ADD COLUMN seen_nid INTEGER NOT NULL DEFAULT 0")
         if not d.execute("SELECT 1 FROM settings WHERE key='timetable'").fetchone():
             d.execute("INSERT INTO settings VALUES('timetable',?)", (json.dumps(DEFAULT_TT),))
         email, pw = os.environ.get("ADMIN_EMAIL"), os.environ.get("ADMIN_PASSWORD")
@@ -178,7 +186,7 @@ def register():
     if len(pw) < 8:
         return err("Password must be at least 8 characters.")
     try:
-        cur = db().execute("INSERT INTO users(name,email,pw_hash,role,approved) VALUES(?,?,?, 'student', 0)",
+        cur = db().execute("INSERT INTO users(name,email,pw_hash,role,approved,seen_nid) VALUES(?,?,?, 'student', 0, (SELECT COALESCE(MAX(id),0) FROM notifications))",
                            (name, email, generate_password_hash(pw)))  # always a pending student
         db().commit()
     except sqlite3.IntegrityError:
@@ -223,10 +231,15 @@ def data():
         announcements=[dict(r) for r in d.execute("SELECT * FROM announcements ORDER BY pinned DESC, created DESC, id DESC")],
         events=[dict(r) for r in d.execute(
             "SELECT e.*, (SELECT COUNT(*) FROM rsvps r WHERE r.event_id=e.id) AS going FROM events e ORDER BY date")],
-        assignments=[dict(r) for r in d.execute("SELECT * FROM assignments ORDER BY day, due")],
+        assignments=[dict(r) for r in d.execute("SELECT * FROM assignments ORDER BY due")],
         attendance={r["subject"]: {"att": r["attended"], "total": r["total"]}
                     for r in d.execute("SELECT * FROM attendance WHERE user_id=?", (uid,))},
         my_rsvps=[r["event_id"] for r in d.execute("SELECT event_id FROM rsvps WHERE user_id=?", (uid,))],
+        exams=[dict(r) for r in d.execute("SELECT * FROM exams ORDER BY date, time")],
+        links=[dict(r) for r in d.execute("SELECT * FROM links ORDER BY kind, id")],
+        att_log=[dict(r) for r in d.execute(
+            "SELECT subject,attended,ts FROM att_log WHERE user_id=? ORDER BY id DESC LIMIT 300", (uid,))][::-1],
+        **notif_payload(uid),
     )
 
 
@@ -237,11 +250,31 @@ def mark_attendance():
     j = request.get_json(silent=True) or {}
     if j.get("subject") not in SUBJECTS:
         return err("Unknown subject.")
-    db().execute(
+    att, d = (1 if j.get("attended") else 0), db()
+    d.execute(
         "INSERT INTO attendance(user_id,subject,attended,total) VALUES(?,?,?,1) "
         "ON CONFLICT(user_id,subject) DO UPDATE SET attended=attended+excluded.attended, total=total+1",
-        (g.user["id"], j["subject"], 1 if j.get("attended") else 0))
-    db().commit()
+        (g.user["id"], j["subject"], att))
+    d.execute("INSERT INTO att_log(user_id,subject,attended) VALUES(?,?,?)", (g.user["id"], j["subject"], att))
+    d.commit()
+    return jsonify(ok=True)
+
+
+@app.post("/api/attendance/undo")
+@need()
+def undo_attendance():
+    subj, uid, d = (request.get_json(silent=True) or {}).get("subject"), g.user["id"], db()
+    if subj not in SUBJECTS:
+        return err("Unknown subject.")
+    row = d.execute("SELECT id,attended FROM att_log WHERE user_id=? AND subject=? ORDER BY id DESC LIMIT 1",
+                    (uid, subj)).fetchone()
+    if not row:
+        return err("Nothing to undo for this subject.")
+    d.execute("DELETE FROM att_log WHERE id=?", (row["id"],))
+    d.execute("UPDATE attendance SET attended=MAX(0,attended-?), total=MAX(0,total-1) WHERE user_id=? AND subject=?",
+              (row["attended"], uid, subj))
+    d.execute("DELETE FROM attendance WHERE user_id=? AND subject=? AND total=0", (uid, subj))
+    d.commit()
     return jsonify(ok=True)
 
 
@@ -249,6 +282,7 @@ def mark_attendance():
 @need()
 def reset_attendance():
     db().execute("DELETE FROM attendance WHERE user_id=?", (g.user["id"],))
+    db().execute("DELETE FROM att_log WHERE user_id=?", (g.user["id"],))
     db().commit()
     return jsonify(ok=True)
 
@@ -268,18 +302,65 @@ def rsvp(eid):
 
 
 # ---------- CR / admin only ----------
+def notify(kind, title):
+    d = db()
+    d.execute("INSERT INTO notifications(kind,title) VALUES(?,?)", (kind, title[:120]))
+    d.execute("DELETE FROM notifications WHERE id <= (SELECT MAX(id) FROM notifications) - 100")
+    d.commit()
+
+
+def notif_payload(uid):
+    d = db()
+    seen = d.execute("SELECT seen_nid FROM users WHERE id=?", (uid,)).fetchone()["seen_nid"]
+    rows = [dict(r) for r in d.execute("SELECT * FROM notifications ORDER BY id DESC LIMIT 30")]
+    return {"notifications": rows, "unread": sum(1 for r in rows if r["id"] > seen)}
+
+
+@app.get("/api/notifications")
+@need()
+def notifications():
+    return jsonify(**notif_payload(g.user["id"]))
+
+
+@app.post("/api/notifications/seen")
+@need()
+def notifications_seen():
+    db().execute("UPDATE users SET seen_nid=(SELECT COALESCE(MAX(id),0) FROM notifications) WHERE id=?", (g.user["id"],))
+    db().commit()
+    return jsonify(ok=True)
+
+
+def _ann_vals(j):
+    cat = j.get("cat") if j.get("cat") in CATS else "General"
+    return clean(j.get("title"), 80), clean(j.get("body"), 400), cat, 1 if j.get("pin") else 0
+
+
 @app.post("/api/announcements")
 @need(*STAFF)
 def add_announcement():
-    j = request.get_json(silent=True) or {}
-    cat = j.get("cat") if j.get("cat") in CATS else "General"
+    t, b, c, p = _ann_vals(request.get_json(silent=True) or {})
     d = db()
-    if j.get("pin"):
+    if p:
         d.execute("UPDATE announcements SET pinned=0")
     d.execute("INSERT INTO announcements(title,body,cat,pinned,author) VALUES(?,?,?,?,?)",
-              (clean(j.get("title"), 80), clean(j.get("body"), 400), cat, 1 if j.get("pin") else 0,
-               "Admin" if g.user["role"] == "admin" else "CR"))
+              (t, b, c, p, "Admin" if g.user["role"] == "admin" else "CR"))
     d.commit()
+    notify("announcement", f"New announcement: {t}")
+    return jsonify(ok=True)
+
+
+@app.put("/api/announcements/<int:i>")
+@need(*STAFF)
+def edit_announcement(i):
+    t, b, c, p = _ann_vals(request.get_json(silent=True) or {})
+    d = db()
+    if p:
+        d.execute("UPDATE announcements SET pinned=0 WHERE id<>?", (i,))
+    cur = d.execute("UPDATE announcements SET title=?,body=?,cat=?,pinned=? WHERE id=?", (t, b, c, p, i))
+    d.commit()
+    if not cur.rowcount:
+        return err("Not found.", 404)
+    notify("announcement", f"Announcement updated: {t}")
     return jsonify(ok=True)
 
 
@@ -290,41 +371,56 @@ def del_announcement(i):
     return jsonify(ok=True)
 
 
-@app.post("/api/events")
-@need(*STAFF)
-def add_event():
-    j = request.get_json(silent=True) or {}
-    db().execute("INSERT INTO events(title,date,place) VALUES(?,?,?)",
-                 (clean(j.get("title"), 60), clean_date(j.get("date")), clean(j.get("place"), 60, False)))
-    db().commit()
-    return jsonify(ok=True)
+def clean_url(v):
+    v = clean(v, 300)
+    if not re.fullmatch(r"https?://[^\s]+", v):  # blocks javascript: and other schemes
+        raise ValueError("Link must start with http:// or https://")
+    return v
 
 
-@app.delete("/api/events/<int:i>")
-@need(*STAFF)
-def del_event(i):
-    db().execute("DELETE FROM events WHERE id=?", (i,)); db().commit()
-    return jsonify(ok=True)
+def crud(name, cols, parse, label, tidx=0, kind=None):
+    """POST/PUT/DELETE /api/<name>, CR/admin only. parse(json) -> tuple matching cols."""
+    ins = f"INSERT INTO {name}({','.join(cols)}) VALUES({','.join('?' * len(cols))})"
+    upd = f"UPDATE {name} SET {','.join(c + '=?' for c in cols)} WHERE id=?"
+
+    @need(*STAFF)
+    def create():
+        v = parse(request.get_json(silent=True) or {})
+        db().execute(ins, v); db().commit()
+        if kind:
+            notify(kind, f"New {label}: {v[tidx]}")
+        return jsonify(ok=True)
+
+    @need(*STAFF)
+    def update(i):
+        v = parse(request.get_json(silent=True) or {})
+        cur = db().execute(upd, (*v, i)); db().commit()
+        if not cur.rowcount:
+            return err("Not found.", 404)
+        if kind:
+            notify(kind, f"Updated {label}: {v[tidx]}")
+        return jsonify(ok=True)
+
+    @need(*STAFF)
+    def delete(i):
+        db().execute(f"DELETE FROM {name} WHERE id=?", (i,)); db().commit()
+        return jsonify(ok=True)
+
+    app.add_url_rule(f"/api/{name}", f"create_{name}", create, methods=["POST"])
+    app.add_url_rule(f"/api/{name}/<int:i>", f"update_{name}", update, methods=["PUT"])
+    app.add_url_rule(f"/api/{name}/<int:i>", f"delete_{name}", delete, methods=["DELETE"])
 
 
-@app.post("/api/assignments")
-@need(*STAFF)
-def add_assignment():
-    j = request.get_json(silent=True) or {}
-    day = j.get("day")
-    if not isinstance(day, int) or not 0 <= day <= 6:
-        return err("Invalid day.")
-    db().execute("INSERT INTO assignments(day,subject,title,due) VALUES(?,?,?,?)",
-                 (day, clean(j.get("subject"), 30), clean(j.get("title"), 80), clean_date(j.get("due"))))
-    db().commit()
-    return jsonify(ok=True)
-
-
-@app.delete("/api/assignments/<int:i>")
-@need(*STAFF)
-def del_assignment(i):
-    db().execute("DELETE FROM assignments WHERE id=?", (i,)); db().commit()
-    return jsonify(ok=True)
+crud("events", ("title", "date", "place"),
+     lambda j: (clean(j.get("title"), 60), clean_date(j.get("date")), clean(j.get("place"), 60, False)), "event", 0, "event")
+crud("assignments", ("subject", "title", "due"),
+     lambda j: (clean(j.get("subject"), 30), clean(j.get("title"), 80), clean_date(j.get("due"))), "assignment", 1, "assignment")
+crud("exams", ("title", "subject", "date", "time", "venue"),
+     lambda j: (clean(j.get("title"), 40), clean(j.get("subject"), 30, False), clean_date(j.get("date")),
+                clean(j.get("time"), 20, False), clean(j.get("venue"), 40, False)), "exam", 0, "exam")
+crud("links", ("kind", "title", "url", "note"),
+     lambda j: (j.get("kind") if j.get("kind") in ("resource", "social") else "resource", clean(j.get("title"), 60),
+                clean_url(j.get("url")), clean(j.get("note"), 80, False)), "link", 1, None)
 
 
 @app.put("/api/timetable")
@@ -337,9 +433,10 @@ def set_timetable():
     for r in rows:
         if not isinstance(r, list) or len(r) != 2 or not isinstance(r[1], list) or len(r[1]) != 7:
             return err("Invalid timetable.")
-        out.append([clean(r[0], 12), [clean(c, 30, False) or "—" for c in r[1]]])
+        out.append([clean(r[0], 24), [clean(c, 30, False) or "—" for c in r[1]]])
     db().execute("INSERT OR REPLACE INTO settings VALUES('timetable',?)", (json.dumps(out),))
     db().commit()
+    notify("timetable", "Timetable updated")
     return jsonify(ok=True)
 
 

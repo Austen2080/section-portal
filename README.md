@@ -26,3 +26,10 @@ All checks run in `app.py`; hiding buttons in the page is only cosmetic.
 - `pip install -r requirements.txt && HTTPS=1 SECRET_KEY=<random> gunicorn -w 2 app:app`
 - Serve behind HTTPS (Nginx/Caddy or your host). `HTTPS=1` marks the session cookie Secure.
 - Back up `portal.db` regularly. Set `DB_PATH` to keep it on a persistent disk.
+
+## Features (v2)
+- Deadlines (assignments with due dates, auto-sorted, past items collapse) and an Exams / mid-sem schedule
+- Attendance insights (donut, per-subject bars, trend, streaks) and per-subject Undo
+- CR/admin can edit announcements, events, assignments, exams, links and the timetable (add/remove time slots)
+- Resources block on the dashboard (e.g. a Drive link) and a Social page for unofficial group links
+- Notification bell for every announcement/event/assignment/exam/timetable change, plus optional browser alerts while the site is open
